@@ -1,6 +1,5 @@
 name: Build docker images
 on:
-  push:
   workflow_dispatch:
     inputs:
       commit:
@@ -25,7 +24,6 @@ jobs:
       TAG: ${{steps.get-parameters.outputs.TAG}}
     steps:
       - name: Download artifacts
-        if: github.event_name == 'workflow_dispatch'
         uses: dawidd6/action-download-artifact@v2
         with:
           workflow: build.yml
@@ -37,11 +35,7 @@ jobs:
       - name: Fetch build variables
         id: get-parameters
         run: |
-          if [ -f parameters.txt ]; then
-              cat parameters.txt >> $GITHUB_OUTPUT
-          else
-              echo TAG=test >> $GITHUB_OUTPUT
-          fi
+          cat parameters.txt >> $GITHUB_OUTPUT
           cat $GITHUB_OUTPUT
 
   docker-build:
@@ -67,7 +61,7 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           context: .
-          push: ${{ (github.event_name == 'workflow_dispatch' && inputs.push) || false }}
+          push: ${{inputs.push}}
           file: ./${{matrix.file}}
           tags: |
             mstorsjo/llvm-mingw:${{matrix.maintag}}
