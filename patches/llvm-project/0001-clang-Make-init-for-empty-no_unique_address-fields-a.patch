@@ -1,0 +1,114 @@
+From 52c29aa80cf8a838bcf12a87f23d755c86ebc6cd Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Martin=20Storsj=C3=B6?= <martin@martin.st>
+Date: Mon, 7 Aug 2023 09:59:39 +0300
+Subject: [PATCH] [clang] Make init for empty no_unique_address fields a no-op
+ write
+
+An empty struct is handled as a struct with a dummy i8, on all targets.
+
+Most targets treat an empty struct return value as essentially
+void - but some don't. (Currently, at least x86_64-windows-* and
+powerpc64le-* don't treat it as void.)
+
+When intializing a struct with such a no_unique_address member,
+make sure we don't write the dummy i8 into the struct where there's
+no space allocated for it.
+
+Previously it would clobber the actual valid data of the struct.
+
+Fixes https://github.com/llvm/llvm-project/issues/64253, and
+possibly https://github.com/llvm/llvm-project/issues/64077
+and https://github.com/llvm/llvm-project/issues/64427 as well.
+
+Differential Revision: https://reviews.llvm.org/D157332
+---
+ clang/lib/CodeGen/CGCall.cpp                  | 11 +++--
+ clang/test/CodeGenCXX/ctor-empty-nounique.cpp | 47 +++++++++++++++++++
+ 2 files changed, 55 insertions(+), 3 deletions(-)
+ create mode 100644 clang/test/CodeGenCXX/ctor-empty-nounique.cpp
+
+diff --git a/clang/lib/CodeGen/CGCall.cpp b/clang/lib/CodeGen/CGCall.cpp
+index 28c3bc7c9f70..a1a09a52d4b0 100644
+--- a/clang/lib/CodeGen/CGCall.cpp
++++ b/clang/lib/CodeGen/CGCall.cpp
+@@ -13,6 +13,7 @@
+ 
+ #include "CGCall.h"
+ #include "ABIInfo.h"
++#include "ABIInfoImpl.h"
+ #include "CGBlocks.h"
+ #include "CGCXXABI.h"
+ #include "CGCleanup.h"
+@@ -5777,9 +5778,13 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
+         DestIsVolatile = false;
+       }
+ 
+-      // If the value is offset in memory, apply the offset now.
+-      Address StorePtr = emitAddressAtOffset(*this, DestPtr, RetAI);
+-      CreateCoercedStore(CI, StorePtr, DestIsVolatile, *this);
++      // An empty record can overlap other data (if declared with no_unique_address);
++      // omit the store for such types - as there is no actual data to store.
++      if (!isEmptyRecord(getContext(), RetTy, true)) {
++        // If the value is offset in memory, apply the offset now.
++        Address StorePtr = emitAddressAtOffset(*this, DestPtr, RetAI);
++        CreateCoercedStore(CI, StorePtr, DestIsVolatile, *this);
++      }
+ 
+       return convertTempToRValue(DestPtr, RetTy, SourceLocation());
+     }
+diff --git a/clang/test/CodeGenCXX/ctor-empty-nounique.cpp b/clang/test/CodeGenCXX/ctor-empty-nounique.cpp
+new file mode 100644
+index 000000000000..f01cad1dacf2
+--- /dev/null
++++ b/clang/test/CodeGenCXX/ctor-empty-nounique.cpp
+@@ -0,0 +1,47 @@
++// RUN: %clang_cc1 -triple x86_64-windows-gnu -emit-llvm -o - %s | FileCheck %s
++// RUN: %clang_cc1 -triple powerpc64le-windows-gnu -emit-llvm -o - %s | FileCheck %s
++
++// An empty struct is handled as a struct with a dummy i8, on all targets.
++// Most targets treat an empty struct return value as essentially void - but
++// some don't. (Currently, at least x86_64-windows-* and powerpc64le-* don't
++// treat it as void.)
++//
++// When intializing a struct with such a no_unique_address member, make sure we
++// don't write the dummy i8 into the struct where there's no space allocated for
++// it.
++//
++// This can only be tested with targets that don't treat empty struct returns as
++// void.
++
++struct S {};
++S f();
++struct Z {
++  int x;
++  [[no_unique_address]] S y;
++  Z();
++};
++Z::Z() : x(111), y(f()) {}
++
++// CHECK: define {{.*}} @_ZN1ZC2Ev
++// CHECK: %call = call i8 @_Z1fv()
++// CHECK-NEXT: ret void
++
++
++// Check that the constructor for an empty member gets called with the right
++// 'this' pointer.
++
++struct S2 {
++  S2();
++};
++struct Z2 {
++  int x;
++  [[no_unique_address]] S2 y;
++  Z2();
++};
++Z2::Z2() : x(111) {}
++
++// CHECK: define {{.*}} @_ZN2Z2C2Ev(ptr {{.*}} %this)
++// CHECK: %this.addr = alloca ptr
++// CHECK: store ptr %this, ptr %this.addr
++// CHECK: %this1 = load ptr, ptr %this.addr
++// CHECK: call void @_ZN2S2C1Ev(ptr {{.*}} %this1)
+-- 
+2.34.1
+
