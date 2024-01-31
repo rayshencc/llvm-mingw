@@ -169,7 +169,13 @@ jobs:
   macos:
     if: (github.event_name != 'schedule') || (github.repository == 'mstorsjo/llvm-mingw')
     needs: [prepare]
-    runs-on: macos-latest
+    strategy:
+      matrix:
+        runner:
+          - macos-latest
+          - macos-13
+          - macos-14
+    runs-on: ${{matrix.runner}}
     steps:
       - uses: actions/checkout@v4
       - name: Build
@@ -192,7 +198,7 @@ jobs:
           tar -Jcf ../$NAME.tar.xz $NAME
       - uses: actions/upload-artifact@v4
         with:
-          name: macos-ucrt-toolchain
+          name: ${{matrix.runner}}-ucrt-toolchain
           path: |
             llvm-mingw-*.tar.xz
           retention-days: 7
